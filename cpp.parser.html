@@ -1,0 +1,1145 @@
+<head>
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.js"></script>
+	<script>
+		$(document).ready(function() {
+			var Parser = {
+				lines: [],
+				line: 0,
+				stack: [],
+				tokens: [{
+					classes: []
+				}],
+				init: function(lines) {
+					// just save lines in the local structure
+					this.lines = lines;
+				},
+				//
+				// Wrap some char or substring with a spaces
+				// Uses to simplify tokenization process
+				//
+				addSpaces: function(sm, ch) {
+					if (sm.indexOf(ch) >= 0) {
+						return sm.split(ch).join(" " + ch + " ");
+					}
+					return sm;
+				},
+				//
+				// split all control symbols via spaces
+				// before splitting string on tokens
+				//
+				splitters: ["{", "{", "(", ")", ":", ";", "::"],
+				makeTokenable: function(sm) {
+					var res = sm;
+					for (x in this.splitters) {
+						res = this.addSpaces(res, this.splitters[x]);
+					}
+					return res;
+				},
+				//
+				// split next line on tokens
+				//
+				getTokens: function(inp) {
+					if (!inp) return;
+					if (inp.indexOf("//") >= 0)
+						inp = inp.substr(0, inp.indexOf("//"));
+					return this.makeTokenable(inp).split(" ");
+				},
+				//
+				// provide next token
+				//
+				getNextToken: function() {
+					// check if there is no more tokens in the line
+					// then read next line
+					var next = "";
+
+					while (next == "") {
+						if (this.tokens.length == 0) {
+							if (this.line == this.lines.length)
+								return null;
+							// get next tokkens
+							this.tokens = this.getTokens(this.lines[this.line++]);
+						}
+						next = this.tokens.shift();
+					}
+					return (next == "" ? null : next);
+				},
+				//
+				// Each file could consits of namsaces or classes
+				// there is no cache for a standalon functions
+				// or friends functions
+				//
+				program: {
+					namespaces: [],
+					classes: []
+				},
+				//
+				// Parse current program to extract namespaces and classes
+				//
+				parse: function() {
+					var x;
+					while (x = this.getNextToken()) {
+						if (x == "namespace") {
+							var nm = this.parseNamespace();
+							nm.classes = [];
+							nm.namespaces = [];
+							this.stack.push(nm);
+						} else if (x == "class" || x == "struct") {
+							// class parser detect } by  itself
+							var sm = this.parseClass();
+							if (this.stack.length == 0) {
+								this.program.classes.push(top);
+							}
+							if (this.stack.length > 0) {
+								this.stack[this.stack.length - 1].classes.push(sm);
+							}
+						} else if (x[0] == "}") {
+							// Check the closing scope
+							if (this.stack.length > 1) {
+								var top = this.stack.pop();
+								this.stack[this.stack.length - 1].namespaces.push(top);
+							}
+							if (this.stack.length == 1) {
+								var top = this.stack.pop();
+								this.program.namespaces.push(top);
+							}
+						}
+					}
+				},
+				//
+				// namespace token identified, parse all stuff after token
+				//
+				parseNamespace: function() {
+					var name = this.getNextToken();
+					console.log("Parsing namespace: " + name);
+					if (name.indexOf("{") >= 0)
+						return {
+							type: "namespace",
+							isAnonymouse: true
+						};
+					// Check next token
+					var x = this.getNextToken();
+					// it is not unnamed namespace
+					if (x.indexOf("{") >= 0)
+						return {
+							type: "namespace",
+							isAnonymouse: false,
+							value: name
+						};
+
+					console.log("Unhandled use-case with namespace parsing: " + name + " " + x);
+					// Try to read all token for unknown use-case
+					while (x && x.indexOf("{") < 0) {
+						name += x;
+						x = this.getNextToken();
+					}
+					return {
+						type: "namespace",
+						value: name,
+						isAnonymouse: false
+					};
+				},
+				//
+				// the "class" token identified, parse class start or
+				// read class methods
+				//
+				parseClass: function(type) {
+					var x = this.getNextToken();
+					console.log("parsing class: " + x);
+					var base = {};
+					//
+					// use-case:
+					// class {
+					// } arg;
+					//
+					if (x[0] == "{") {
+						return null;
+					} else {
+						var name = x;
+						var x = this.getNextToken();
+
+						if (x[0] == ";") {
+							return {
+								type: type,
+								isDeclaration: true,
+								name: name
+							};
+						}
+
+						var attributes = "";
+						// parse inheritance
+						while (x[0] != ":" and x[0] != "{") {
+							attributes += x;
+							x = this.getNextToken();
+
+						}
+					}
+
+					if (x[0] == ":")
+						base = this.parseBaseClasses();
+
+					var result = this.parseMethods();
+					return {
+						type: type,
+						isDeclaration: true,
+						name: name,
+						subroutine: attributes, // CONTENT_EXPORT __attributes visibility etc..
+						attributes: result.attributes, // fields of the class
+						methods: result.methods,  // methods of the class
+						base: base // the list of base classes
+					};
+				},
+				inharitage: ["public", "private", "protected", "virtual"],
+				__getBaseClass: function() {
+				},
+				parseBaseClasses: function() {
+					var base = [];
+					var visibility = "public";
+					do {
+						var next = this.getNextToken();
+						var name;
+						if (this.inharitage.indexOf(next) < 0) {
+							name = next;
+						}
+						else {
+							// visibility has been changed
+							visibility = next;
+							name = this.getNextToken();
+						}
+						base.push({visibility: visibility, className: name});
+						var x = this.getNextToken();
+					} while (x[0] == ",");
+
+					if (x[0] != "{") {
+						alert("Unhandle use-case with class heritage parsing: " + x)
+					}
+					return base;
+				},
+				parseMethods: function(classType, className) {
+					var x = this.getNextToken();
+					var nested = [];
+					var visibility = (classType == "class" ? "private": "public");
+					// 1. check that it is not visibility modificator
+					// For example
+					// class A {
+					//   public:
+					//     int a;
+					// }
+					if (this.inharitage.indexOf(x) >= 0) {
+						var y = this.getNextToken();
+						if (y[0] != ":")
+						  alert("Unexpected handler: " + x + y);
+						visibility = x;
+						continue;
+					}
+					// 2. probably it is class,struct or enum
+					if (["class", "struct"].indexOf(x) >= 0) {
+						nested.push(this.parseClass());
+						continue;
+					}
+					// 3. probably it is the constructor
+					//    or attribute of method. we have to read whole line to be sure what is it
+					var is_opened = true;
+					var subset = [];
+					var is_method = false;
+					var stack = [];
+
+					while (is_opened) {
+						subset.push(x);
+						x = this.getNextToken();
+
+						if (x[0] == ";")
+						  is_opened = false;
+						if (x[0] == "(" || x[0] == "{") {
+							stack.push(x[0]);
+							is_method = true;
+						}
+						if (x[0] == ")" || x[0] == ")") {
+							var val = stack.top();
+							is_method = true;
+						}
+							
+						if ((val == "(" && x[0] == ")")
+						 	|| (val == "{" && x[0] == "}")) {
+								stack.pop();
+						}
+					}
+
+
+				}
+			}
+
+			var tokens = [];
+			$("a").each(function(idx, item) {
+				tokens.push($(item).text());
+				/*
+							var tokens = getTokens($(item).text());
+							var x;
+							while (x = tokens.shift()) {
+							// skip an emply tokens
+							if (x == "")
+							  continue;
+
+				            if ( ["namespace", "class", "struct", "enum"].indexOf(x) >=0) {
+				              push_next_token = x;
+				            }
+				            else if (waiting_base) {
+				              if (["public", "private", "protected"].indexOf(x) >= 0) {
+
+				              }
+				              waiting_base = null;
+				            }
+				            else if (push_next_token != null) {
+							  if (push_next_token == "namespace") {
+								  stack.push({type: "namespace",
+							  }
+				              if (x in ["CONTENT_EXPORT"]) {
+				                continue;
+				              }
+				              stack.push({type: token_type, syntax: push_next_token, name: x});
+				              push_next_token = null;
+				              token_type = null;
+				            }
+				          }
+				*/
+			});
+
+			Parser.init(tokens);
+			var program = Parser.parse();
+			console.log("Parse complete");
+			console.dir(program);
+		});
+	</script>
+</head>
+
+<body>
+	<a>// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+</a><a>// Use of this source code is governed by a BSD-style license that can be
+</a><a>// found in the LICENSE file.
+</a><a>
+</a><a>#ifndef CONTENT_PUBLIC_BROWSER_WEB_CONTENTS_H_
+</a><a>#define CONTENT_PUBLIC_BROWSER_WEB_CONTENTS_H_
+</a><a>
+</a><a>#include <stdint.h>
+</a><a>
+</a><a>#include <memory>
+</a><a>#include <set>
+</a><a>#include <string>
+</a><a>#include <vector>
+</a><a>
+</a><a>#include "base/callback_forward.h"
+</a><a>#include "base/files/file_path.h"
+</a><a>#include "base/process/kill.h"
+</a><a>#include "base/strings/string16.h"
+</a><a>#include "base/supports_user_data.h"
+</a><a>#include "build/build_config.h"
+</a><a>#include "content/common/content_export.h"
+</a><a>#include "content/public/browser/invalidate_type.h"
+</a><a>#include "content/public/browser/navigation_controller.h"
+</a><a>#include "content/public/browser/page_navigator.h"
+</a><a>#include "content/public/browser/save_page_type.h"
+</a><a>#include "content/public/browser/screen_orientation_delegate.h"
+</a><a>#include "content/public/browser/site_instance.h"
+</a><a>#include "content/public/browser/web_contents_observer.h"
+</a><a>#include "content/public/browser/web_ui.h"
+</a><a>#include "content/public/common/stop_find_action.h"
+</a><a>#include "third_party/WebKit/common/sandbox_flags.h"
+</a><a>#include "third_party/skia/include/core/SkColor.h"
+</a><a>#include "ui/accessibility/ax_tree_update.h"
+</a><a>#include "ui/base/window_open_disposition.h"
+</a><a>#include "ui/gfx/geometry/rect.h"
+</a><a>#include "ui/gfx/native_widget_types.h"
+</a><a>
+</a><a>#if defined(OS_ANDROID)
+</a><a>#include "base/android/scoped_java_ref.h"
+</a><a>#endif
+</a><a>
+</a><a>namespace base {
+</a><a>class TimeTicks;
+</a><a>}
+</a><a>
+</a><a>namespace blink {
+</a><a>struct WebFindOptions;
+</a><a>}
+</a><a>
+</a><a>namespace device {
+</a><a>namespace mojom {
+</a><a>class WakeLockContext;
+</a><a>}
+</a><a>}
+</a><a>
+</a><a>namespace net {
+</a><a>struct LoadStateWithParam;
+</a><a>}
+</a><a>
+</a><a>namespace service_manager {
+</a><a>class InterfaceProvider;
+</a><a>}
+</a><a>
+</a><a>namespace content {
+</a><a>
+</a><a>class BrowserContext;
+</a><a>class BrowserPluginGuestDelegate;
+</a><a>class InterstitialPage;
+</a><a>class RenderFrameHost;
+</a><a>class RenderViewHost;
+</a><a>class RenderWidgetHost;
+</a><a>class RenderWidgetHostView;
+</a><a>class WebContentsDelegate;
+</a><a>struct CustomContextMenuContext;
+</a><a>struct DropData;
+</a><a>struct Manifest;
+</a><a>struct MHTMLGenerationParams;
+</a><a>struct PageImportanceSignals;
+</a><a>struct RendererPreferences;
+</a><a>
+</a><a>// WebContents is the core class in content/. A WebContents renders web content
+</a><a>// (usually HTML) in a rectangular area.
+</a><a>//
+</a><a>// Instantiating one is simple:
+</a><a>//   std::unique_ptr<content::WebContents> web_contents(
+</a><a>//       content::WebContents::Create(
+</a><a>//           content::WebContents::CreateParams(browser_context)));
+</a><a>//   gfx::NativeView view = web_contents->GetNativeView();
+</a><a>//   // |view| is an HWND, NSView*, GtkWidget*, etc.; insert it into the view
+</a><a>//   // hierarchy wherever it needs to go.
+</a><a>//
+</a><a>// That's it; go to your kitchen, grab a scone, and chill. WebContents will do
+</a><a>// all the multi-process stuff behind the scenes. More details are at
+</a><a>// http://www.chromium.org/developers/design-documents/multi-process-architecture
+</a><a>// .
+</a><a>//
+</a><a>// Each WebContents has exactly one NavigationController; each
+</a><a>// NavigationController belongs to one WebContents. The NavigationController can
+</a><a>// be obtained from GetController(), and is used to load URLs into the
+</a><a>// WebContents, navigate it backwards/forwards, etc. See navigation_controller.h
+</a><a>// for more details.
+</a><a>class WebContents : public PageNavigator,
+</a><a>                    public base::SupportsUserData {
+</a><a> public:
+</a><a>  struct CONTENT_EXPORT CreateParams {
+</a><a>    explicit CreateParams(BrowserContext* context);
+</a><a>    CreateParams(const CreateParams& other);
+</a><a>    ~CreateParams();
+</a><a>    CreateParams(BrowserContext* context, scoped_refptr<SiteInstance> site);
+</a><a>
+</a><a>    BrowserContext* browser_context;
+</a><a>
+</a><a>    // Specifying a SiteInstance here is optional.  It can be set to avoid an
+</a><a>    // extra process swap if the first navigation is expected to require a
+</a><a>    // privileged process.
+</a><a>    scoped_refptr<SiteInstance> site_instance;
+</a><a>
+</a><a>    // The process id of the frame initiating the open.
+</a><a>    int opener_render_process_id;
+</a><a>
+</a><a>    // The routing id of the frame initiating the open.
+</a><a>    int opener_render_frame_id;
+</a><a>
+</a><a>    // If the opener is suppressed, then the new WebContents doesn't hold a
+</a><a>    // reference to its opener.
+</a><a>    bool opener_suppressed;
+</a><a>
+</a><a>    // Indicates whether this WebContents was created with a window.opener.
+</a><a>    // This is used when determining whether the WebContents is allowed to be
+</a><a>    // closed via window.close(). This may be true even with a null |opener|
+</a><a>    // (e.g., for blocked popups).
+</a><a>    bool created_with_opener;
+</a><a>
+</a><a>    // The routing ids of the RenderView, main RenderFrame, and the widget for
+</a><a>    // the main RenderFrame. Either all routing IDs must be provided or all must
+</a><a>    // be MSG_ROUTING_NONE to have WebContents make the assignment. If provided,
+</a><a>    // these routing IDs are associated with |site_instance->GetProcess()|.
+</a><a>    int32_t routing_id;
+</a><a>    int32_t main_frame_routing_id;
+</a><a>    int32_t main_frame_widget_routing_id;
+</a><a>
+</a><a>    // The name of the top-level frame of the new window. It is non-empty
+</a><a>    // when creating a named window (e.g. <a target="foo"> or
+</a><a>    // window.open('', 'bar')).
+</a><a>    std::string main_frame_name;
+</a><a>
+</a><a>    // Initial size of the new WebContent's view. Can be (0, 0) if not needed.
+</a><a>    gfx::Size initial_size;
+</a><a>
+</a><a>    // True if the contents should be initially hidden.
+</a><a>    bool initially_hidden;
+</a><a>
+</a><a>    // If non-null then this WebContents will be hosted by a BrowserPlugin.
+</a><a>    BrowserPluginGuestDelegate* guest_delegate;
+</a><a>
+</a><a>    // Used to specify the location context which display the new view should
+</a><a>    // belong. This can be nullptr if not needed.
+</a><a>    gfx::NativeView context;
+</a><a>
+</a><a>    // Used to specify that the new WebContents creation is driven by the
+</a><a>    // renderer process. In this case, the renderer-side objects, such as
+</a><a>    // RenderFrame, have already been created on the renderer side, and
+</a><a>    // WebContents construction should take this into account.
+</a><a>    bool renderer_initiated_creation;
+</a><a>
+</a><a>    // True if the WebContents should create its renderer process and main
+</a><a>    // RenderFrame before the first navigation. This is useful to reduce
+</a><a>    // the latency of the first navigation in cases where it might
+</a><a>    // not happen right away.
+</a><a>    // Note that the pre-created renderer process may not be used if the first
+</a><a>    // navigation requires a dedicated or privileged process, such as a WebUI.
+</a><a>    bool initialize_renderer;
+</a><a>
+</a><a>    // Sandboxing flags set on the new WebContents.
+</a><a>    blink::WebSandboxFlags starting_sandbox_flags;
+</a><a>  };
+</a><a>
+</a><a>  // Creates a new WebContents.
+</a><a>  CONTENT_EXPORT static WebContents* Create(const CreateParams& params);
+</a><a>
+</a><a>  // Similar to Create() above but should be used when you need to prepopulate
+</a><a>  // the SessionStorageNamespaceMap of the WebContents. This can happen if
+</a><a>  // you duplicate a WebContents, try to reconstitute it from a saved state,
+</a><a>  // or when you create a new WebContents based on another one (eg., when
+</a><a>  // servicing a window.open() call).
+</a><a>  //
+</a><a>  // You do not want to call this. If you think you do, make sure you completely
+</a><a>  // understand when SessionStorageNamespace objects should be cloned, why
+</a><a>  // they should not be shared by multiple WebContents, and what bad things
+</a><a>  // can happen if you share the object.
+</a><a>  CONTENT_EXPORT static WebContents* CreateWithSessionStorage(
+</a><a>      const CreateParams& params,
+</a><a>      const SessionStorageNamespaceMap& session_storage_namespace_map);
+</a><a>
+</a><a>  // Returns the WebContents that owns the RenderViewHost, or nullptr if the
+</a><a>  // render view host's delegate isn't a WebContents.
+</a><a>  CONTENT_EXPORT static WebContents* FromRenderViewHost(RenderViewHost* rvh);
+</a><a>
+</a><a>  CONTENT_EXPORT static WebContents* FromRenderFrameHost(RenderFrameHost* rfh);
+</a><a>
+</a><a>  // Returns the WebContents associated with the |frame_tree_node_id|.
+</a><a>  CONTENT_EXPORT static WebContents* FromFrameTreeNodeId(
+</a><a>      int frame_tree_node_id);
+</a><a>
+</a><a>  // Sets delegate for platform specific screen orientation functionality.
+</a><a>  CONTENT_EXPORT static void SetScreenOrientationDelegate(
+</a><a>      ScreenOrientationDelegate* delegate);
+</a><a>
+</a><a>  ~WebContents() override {}
+</a><a>
+</a><a>  // Intrinsic tab state -------------------------------------------------------
+</a><a>
+</a><a>  // Gets/Sets the delegate.
+</a><a>  virtual WebContentsDelegate* GetDelegate() = 0;
+</a><a>  virtual void SetDelegate(WebContentsDelegate* delegate) = 0;
+</a><a>
+</a><a>  // Gets the controller for this WebContents.
+</a><a>  virtual NavigationController& GetController() = 0;
+</a><a>  virtual const NavigationController& GetController() const = 0;
+</a><a>
+</a><a>  // Returns the user browser context associated with this WebContents (via the
+</a><a>  // NavigationController).
+</a><a>  virtual content::BrowserContext* GetBrowserContext() const = 0;
+</a><a>
+</a><a>  // Gets the URL that is currently being displayed, if there is one.
+</a><a>  // This method is deprecated. DO NOT USE! Pick either |GetVisibleURL| or
+</a><a>  // |GetLastCommittedURL| as appropriate.
+</a><a>  virtual const GURL& GetURL() const = 0;
+</a><a>
+</a><a>  // Gets the virtual URL currently being displayed in the URL bar, if there is
+</a><a>  // one. This URL might be a pending navigation that hasn't committed yet, so
+</a><a>  // it is not guaranteed to match the current page in this WebContents. A
+</a><a>  // typical example of this is interstitials, which show the URL of the
+</a><a>  // new/loading page (active) but the security context is of the old page (last
+</a><a>  // committed).
+</a><a>  virtual const GURL& GetVisibleURL() const = 0;
+</a><a>
+</a><a>  // Gets the virtual URL of the last committed page in this WebContents.
+</a><a>  // Virtual URLs are meant to be displayed to the user (e.g., they include the
+</a><a>  // "view-source:" prefix for view source URLs, unlike NavigationEntry::GetURL
+</a><a>  // and NavigationHandle::GetURL). The last committed page is the current
+</a><a>  // security context and the content that is actually displayed within the tab.
+</a><a>  // See also GetVisibleURL above, which may differ from this URL.
+</a><a>  virtual const GURL& GetLastCommittedURL() const = 0;
+</a><a>
+</a><a>  // Returns the main frame for the currently active view.
+</a><a>  virtual RenderFrameHost* GetMainFrame() const = 0;
+</a><a>
+</a><a>  // Returns the focused frame for the currently active view.
+</a><a>  virtual RenderFrameHost* GetFocusedFrame() = 0;
+</a><a>
+</a><a>  // Returns the current RenderFrameHost for a given FrameTreeNode ID if it is
+</a><a>  // part of this frame tree, not including frames in any inner WebContents.
+</a><a>  // Returns nullptr if |process_id| does not match the current
+</a><a>  // RenderFrameHost's process ID, to avoid security bugs where callers do not
+</a><a>  // realize a cross-process navigation (and thus privilege change) has taken
+</a><a>  // place. See RenderFrameHost::GetFrameTreeNodeId for documentation on
+</a><a>  // frame_tree_node_id.
+</a><a>  virtual RenderFrameHost* FindFrameByFrameTreeNodeId(int frame_tree_node_id,
+</a><a>                                                      int process_id) = 0;
+</a><a>
+</a><a>  // NOTE: This is generally unsafe to use. Use FindFrameByFrameTreeNodeId
+</a><a>  // instead.
+</a><a>  // Returns the current RenderFrameHost for a given FrameTreeNode ID if it is
+</a><a>  // part of this frame tree. This may not match the caller's expectation, if a
+</a><a>  // cross-process navigation (and thus privilege change) has taken place.
+</a><a>  // See RenderFrameHost::GetFrameTreeNodeId for documentation on this ID.
+</a><a>  virtual RenderFrameHost* UnsafeFindFrameByFrameTreeNodeId(
+</a><a>      int frame_tree_node_id) = 0;
+</a><a>
+</a><a>  // Calls |on_frame| for each frame in the currently active view.
+</a><a>  // Note: The RenderFrameHost parameter is not guaranteed to have a live
+</a><a>  // RenderFrame counterpart in the renderer process. Callbacks should check
+</a><a>  // IsRenderFrameLive(), as sending IPC messages to it in this case will fail
+</a><a>  // silently.
+</a><a>  virtual void ForEachFrame(
+</a><a>      const base::RepeatingCallback<void(RenderFrameHost*)>& on_frame) = 0;
+</a><a>
+</a><a>  // Returns a vector of all RenderFrameHosts in the currently active view in
+</a><a>  // breadth-first traversal order.
+</a><a>  virtual std::vector<RenderFrameHost*> GetAllFrames() = 0;
+</a><a>
+</a><a>  // Sends the given IPC to all live frames in this WebContents and returns the
+</a><a>  // number of sent messages (i.e. the number of processed frames).
+</a><a>  virtual int SendToAllFrames(IPC::Message* message) = 0;
+</a><a>
+</a><a>  // Gets the current RenderViewHost for this tab.
+</a><a>  virtual RenderViewHost* GetRenderViewHost() const = 0;
+</a><a>
+</a><a>  // Returns the currently active RenderWidgetHostView. This may change over
+</a><a>  // time and can be nullptr (during setup and teardown).
+</a><a>  virtual RenderWidgetHostView* GetRenderWidgetHostView() const = 0;
+</a><a>
+</a><a>  // Returns the outermost RenderWidgetHostView. This will return the platform
+</a><a>  // specific RenderWidgetHostView (as opposed to
+</a><a>  // RenderWidgetHostViewChildFrame), which can be used to create context
+</a><a>  // menus.
+</a><a>  virtual RenderWidgetHostView* GetTopLevelRenderWidgetHostView() = 0;
+</a><a>
+</a><a>  // Request a one-time snapshot of the accessibility tree without changing
+</a><a>  // the accessibility mode.
+</a><a>  using AXTreeSnapshotCallback = base::Callback<void(const ui::AXTreeUpdate&)>;
+</a><a>  virtual void RequestAXTreeSnapshot(
+</a><a>      const AXTreeSnapshotCallback& callback) = 0;
+</a><a>
+</a><a>  // Causes the current page to be closed, including running its onunload event
+</a><a>  // handler.
+</a><a>  virtual void ClosePage() = 0;
+</a><a>
+</a><a>  // Returns the currently active fullscreen widget. If there is none, returns
+</a><a>  // nullptr.
+</a><a>  virtual RenderWidgetHostView* GetFullscreenRenderWidgetHostView() const = 0;
+</a><a>
+</a><a>  // Returns the theme color for the underlying content as set by the
+</a><a>  // theme-color meta tag.
+</a><a>  virtual SkColor GetThemeColor() const = 0;
+</a><a>
+</a><a>  // Returns the committed WebUI if one exists, otherwise the pending one.
+</a><a>  virtual WebUI* GetWebUI() const = 0;
+</a><a>  virtual WebUI* GetCommittedWebUI() const = 0;
+</a><a>
+</a><a>  // Allows overriding the user agent used for NavigationEntries it owns.
+</a><a>  virtual void SetUserAgentOverride(const std::string& override) = 0;
+</a><a>  virtual const std::string& GetUserAgentOverride() const = 0;
+</a><a>
+</a><a>  // Set the accessibility mode so that accessibility events are forwarded
+</a><a>  // to each WebContentsObserver.
+</a><a>  virtual void EnableWebContentsOnlyAccessibilityMode() = 0;
+</a><a>
+</a><a>  // Returns true only if the WebContentsObserver accessibility mode is
+</a><a>  // enabled.
+</a><a>  virtual bool IsWebContentsOnlyAccessibilityModeForTesting() const = 0;
+</a><a>
+</a><a>  // Returns true only if complete accessibility mode is on, meaning there's
+</a><a>  // both renderer accessibility, and a native browser accessibility tree.
+</a><a>  virtual bool IsFullAccessibilityModeForTesting() const = 0;
+</a><a>
+</a><a>  virtual const PageImportanceSignals& GetPageImportanceSignals() const = 0;
+</a><a>
+</a><a>  // Tab navigation state ------------------------------------------------------
+</a><a>
+</a><a>  // Returns the current navigation properties, which if a navigation is
+</a><a>  // pending may be provisional (e.g., the navigation could result in a
+</a><a>  // download, in which case the URL would revert to what it was previously).
+</a><a>  virtual const base::string16& GetTitle() const = 0;
+</a><a>
+</a><a>  // Saves the given title to the navigation entry and does associated work. It
+</a><a>  // will update history and the view with the new title, and also synthesize
+</a><a>  // titles for file URLs that have none. Thus |entry| must have a URL set.
+</a><a>  virtual void UpdateTitleForEntry(NavigationEntry* entry,
+</a><a>                                   const base::string16& title) = 0;
+</a><a>
+</a><a>  // Returns the SiteInstance associated with the current page.
+</a><a>  virtual SiteInstance* GetSiteInstance() const = 0;
+</a><a>
+</a><a>  // Returns whether this WebContents is loading a resource.
+</a><a>  virtual bool IsLoading() const = 0;
+</a><a>
+</a><a>  // Returns whether this WebContents is loading and and the load is to a
+</a><a>  // different top-level document (rather than being a navigation within the
+</a><a>  // same document) in the main frame. This being true implies that IsLoading()
+</a><a>  // is also true.
+</a><a>  virtual bool IsLoadingToDifferentDocument() const = 0;
+</a><a>
+</a><a>  // Returns whether this WebContents is waiting for a first-response for the
+</a><a>  // main resource of the page.
+</a><a>  virtual bool IsWaitingForResponse() const = 0;
+</a><a>
+</a><a>  // Returns the current load state and the URL associated with it.
+</a><a>  // The load state is only updated while IsLoading() is true.
+</a><a>  virtual const net::LoadStateWithParam& GetLoadState() const = 0;
+</a><a>  virtual const base::string16& GetLoadStateHost() const = 0;
+</a><a>
+</a><a>  // Returns the upload progress.
+</a><a>  virtual uint64_t GetUploadSize() const = 0;
+</a><a>  virtual uint64_t GetUploadPosition() const = 0;
+</a><a>
+</a><a>  // Returns the character encoding of the page.
+</a><a>  virtual const std::string& GetEncoding() const = 0;
+</a><a>
+</a><a>  // Internal state ------------------------------------------------------------
+</a><a>
+</a><a>  // Indicates whether the WebContents is being captured (e.g., for screenshots
+</a><a>  // or mirroring).  Increment calls must be balanced with an equivalent number
+</a><a>  // of decrement calls.  |capture_size| specifies the capturer's video
+</a><a>  // resolution, but can be empty to mean "unspecified."  The first screen
+</a><a>  // capturer that provides a non-empty |capture_size| will override the value
+</a><a>  // returned by GetPreferredSize() until all captures have ended.
+</a><a>  virtual void IncrementCapturerCount(const gfx::Size& capture_size) = 0;
+</a><a>  virtual void DecrementCapturerCount() = 0;
+</a><a>  virtual bool IsBeingCaptured() const = 0;
+</a><a>
+</a><a>  // Indicates/Sets whether all audio output from this WebContents is muted.
+</a><a>  virtual bool IsAudioMuted() const = 0;
+</a><a>  virtual void SetAudioMuted(bool mute) = 0;
+</a><a>
+</a><a>  // Returns true if the audio is currently audible.
+</a><a>  virtual bool IsCurrentlyAudible() = 0;
+</a><a>
+</a><a>  // Indicates whether any frame in the WebContents is connected to a Bluetooth
+</a><a>  // Device.
+</a><a>  virtual bool IsConnectedToBluetoothDevice() const = 0;
+</a><a>
+</a><a>  // Indicates whether this tab should be considered crashed. The setter will
+</a><a>  // also notify the delegate when the flag is changed.
+</a><a>  virtual bool IsCrashed() const  = 0;
+</a><a>  virtual void SetIsCrashed(base::TerminationStatus status, int error_code) = 0;
+</a><a>
+</a><a>  virtual base::TerminationStatus GetCrashedStatus() const = 0;
+</a><a>  virtual int GetCrashedErrorCode() const = 0;
+</a><a>
+</a><a>  // Whether the tab is in the process of being destroyed.
+</a><a>  virtual bool IsBeingDestroyed() const = 0;
+</a><a>
+</a><a>  // Convenience method for notifying the delegate of a navigation state
+</a><a>  // change.
+</a><a>  virtual void NotifyNavigationStateChanged(InvalidateTypes changed_flags) = 0;
+</a><a>
+</a><a>  // Notifies the WebContents that audio started or stopped being audible.
+</a><a>  virtual void OnAudioStateChanged(bool is_audio_playing) = 0;
+</a><a>
+</a><a>  // Get/Set the last time that the WebContents was made active (either when it
+</a><a>  // was created or shown with WasShown()).
+</a><a>  virtual base::TimeTicks GetLastActiveTime() const = 0;
+</a><a>  virtual void SetLastActiveTime(base::TimeTicks last_active_time) = 0;
+</a><a>
+</a><a>  // Invoked when the WebContents becomes shown/hidden. A hidden WebContents
+</a><a>  // isn't painted on the screen.
+</a><a>  virtual void WasShown() = 0;
+</a><a>  virtual void WasHidden() = 0;
+</a><a>
+</a><a>  // Whether the WebContents is visible. This can return true even if the page
+</a><a>  // is still loading, as opposed to RenderWidgetHostView::IsShowing(), which
+</a><a>  // always returns false when the page is still loading.
+</a><a>  virtual bool IsVisible() const = 0;
+</a><a>
+</a><a>  // Invoked when the WebContents becomes occluded/unoccluded. An occluded
+</a><a>  // WebContents isn't painted on the screen, except in a window switching
+</a><a>  // feature (e.g. Alt-Tab).
+</a><a>  virtual void WasOccluded() = 0;
+</a><a>  virtual void WasUnOccluded() = 0;
+</a><a>
+</a><a>  // Returns true if the before unload and unload listeners need to be
+</a><a>  // fired. The value of this changes over time. For example, if true and the
+</a><a>  // before unload listener is executed and allows the user to exit, then this
+</a><a>  // returns false.
+</a><a>  virtual bool NeedToFireBeforeUnload() = 0;
+</a><a>
+</a><a>  // Runs the beforeunload handler for the main frame. See also ClosePage and
+</a><a>  // SwapOut in RenderViewHost, which run the unload handler.
+</a><a>  //
+</a><a>  // TODO(creis): We should run the beforeunload handler for every frame that
+</a><a>  // has one.
+</a><a>  virtual void DispatchBeforeUnload() = 0;
+</a><a>
+</a><a>  // Attaches this inner WebContents to its container frame
+</a><a>  // |outer_contents_frame| in |outer_web_contents|.
+</a><a>  virtual void AttachToOuterWebContentsFrame(
+</a><a>      WebContents* outer_web_contents,
+</a><a>      RenderFrameHost* outer_contents_frame) = 0;
+</a><a>
+</a><a>  // Invoked when visible security state changes.
+</a><a>  virtual void DidChangeVisibleSecurityState() = 0;
+</a><a>
+</a><a>  // Commands ------------------------------------------------------------------
+</a><a>
+</a><a>  // Stop any pending navigation.
+</a><a>  virtual void Stop() = 0;
+</a><a>
+</a><a>  // Creates a new WebContents with the same state as this one. The returned
+</a><a>  // heap-allocated pointer is owned by the caller.
+</a><a>  virtual WebContents* Clone() = 0;
+</a><a>
+</a><a>  // Reloads the focused frame.
+</a><a>  virtual void ReloadFocusedFrame(bool bypass_cache) = 0;
+</a><a>
+</a><a>  // Reloads all the Lo-Fi images in this WebContents. Ignores the cache and
+</a><a>  // reloads from the network.
+</a><a>  virtual void ReloadLoFiImages() = 0;
+</a><a>
+</a><a>  // Editing commands ----------------------------------------------------------
+</a><a>
+</a><a>  virtual void Undo() = 0;
+</a><a>  virtual void Redo() = 0;
+</a><a>  virtual void Cut() = 0;
+</a><a>  virtual void Copy() = 0;
+</a><a>  virtual void CopyToFindPboard() = 0;
+</a><a>  virtual void Paste() = 0;
+</a><a>  virtual void PasteAndMatchStyle() = 0;
+</a><a>  virtual void Delete() = 0;
+</a><a>  virtual void SelectAll() = 0;
+</a><a>  virtual void CollapseSelection() = 0;
+</a><a>
+</a><a>  // Adjust the selection starting and ending points in the focused frame by
+</a><a>  // the given amounts. A negative amount moves the selection towards the
+</a><a>  // beginning of the document, a positive amount moves the selection towards
+</a><a>  // the end of the document.
+</a><a>  virtual void AdjustSelectionByCharacterOffset(int start_adjust,
+</a><a>                                                int end_adjust,
+</a><a>                                                bool show_selection_menu) = 0;
+</a><a>
+</a><a>  // Replaces the currently selected word or a word around the cursor.
+</a><a>  virtual void Replace(const base::string16& word) = 0;
+</a><a>
+</a><a>  // Replaces the misspelling in the current selection.
+</a><a>  virtual void ReplaceMisspelling(const base::string16& word) = 0;
+</a><a>
+</a><a>  // Let the renderer know that the menu has been closed.
+</a><a>  virtual void NotifyContextMenuClosed(
+</a><a>      const CustomContextMenuContext& context) = 0;
+</a><a>
+</a><a>  // Executes custom context menu action that was provided from Blink.
+</a><a>  virtual void ExecuteCustomContextMenuCommand(
+</a><a>      int action, const CustomContextMenuContext& context) = 0;
+</a><a>
+</a><a>  // Views and focus -----------------------------------------------------------
+</a><a>
+</a><a>  // Returns the native widget that contains the contents of the tab.
+</a><a>  virtual gfx::NativeView GetNativeView() = 0;
+</a><a>
+</a><a>  // Returns the native widget with the main content of the tab (i.e. the main
+</a><a>  // render view host, though there may be many popups in the tab as children of
+</a><a>  // the container).
+</a><a>  virtual gfx::NativeView GetContentNativeView() = 0;
+</a><a>
+</a><a>  // Returns the outermost native view. This will be used as the parent for
+</a><a>  // dialog boxes.
+</a><a>  virtual gfx::NativeWindow GetTopLevelNativeWindow() = 0;
+</a><a>
+</a><a>  // Computes the rectangle for the native widget that contains the contents of
+</a><a>  // the tab in the screen coordinate system.
+</a><a>  virtual gfx::Rect GetContainerBounds() = 0;
+</a><a>
+</a><a>  // Get the bounds of the View, relative to the parent.
+</a><a>  virtual gfx::Rect GetViewBounds() = 0;
+</a><a>
+</a><a>  // Returns the current drop data, if any.
+</a><a>  virtual DropData* GetDropData() = 0;
+</a><a>
+</a><a>  // Sets focus to the native widget for this tab.
+</a><a>  virtual void Focus() = 0;
+</a><a>
+</a><a>  // Sets focus to the appropriate element when the WebContents is shown the
+</a><a>  // first time.
+</a><a>  virtual void SetInitialFocus() = 0;
+</a><a>
+</a><a>  // Stores the currently focused view.
+</a><a>  virtual void StoreFocus() = 0;
+</a><a>
+</a><a>  // Restores focus to the last focus view. If StoreFocus has not yet been
+</a><a>  // invoked, SetInitialFocus is invoked.
+</a><a>  virtual void RestoreFocus() = 0;
+</a><a>
+</a><a>  // Focuses the first (last if |reverse| is true) element in the page.
+</a><a>  // Invoked when this tab is getting the focus through tab traversal (|reverse|
+</a><a>  // is true when using Shift-Tab).
+</a><a>  virtual void FocusThroughTabTraversal(bool reverse) = 0;
+</a><a>
+</a><a>  // Interstitials -------------------------------------------------------------
+</a><a>
+</a><a>  // Various other systems need to know about our interstitials.
+</a><a>  virtual bool ShowingInterstitialPage() const = 0;
+</a><a>
+</a><a>  // Returns the currently visible interstitial, nullptr if no interstitial is
+</a><a>  // visible. Note: This returns nullptr from the time the interstitial page has
+</a><a>  // Show() called on it until the interstitial content is ready and the
+</a><a>  // interstitial is displayed.
+</a><a>  //
+</a><a>  // Compare to InterstitialPage::GetInterstitialPage.
+</a><a>  virtual InterstitialPage* GetInterstitialPage() const = 0;
+</a><a>
+</a><a>  // Misc state & callbacks ----------------------------------------------------
+</a><a>
+</a><a>  // Check whether we can do the saving page operation this page given its MIME
+</a><a>  // type.
+</a><a>  virtual bool IsSavable() = 0;
+</a><a>
+</a><a>  // Prepare for saving the current web page to disk.
+</a><a>  virtual void OnSavePage() = 0;
+</a><a>
+</a><a>  // Save page with the main HTML file path, the directory for saving resources,
+</a><a>  // and the save type: HTML only or complete web page. Returns true if the
+</a><a>  // saving process has been initiated successfully.
+</a><a>  virtual bool SavePage(const base::FilePath& main_file,
+</a><a>                        const base::FilePath& dir_path,
+</a><a>                        SavePageType save_type) = 0;
+</a><a>
+</a><a>  // Saves the given frame's URL to the local filesystem.
+</a><a>  virtual void SaveFrame(const GURL& url,
+</a><a>                         const Referrer& referrer) = 0;
+</a><a>
+</a><a>  // Saves the given frame's URL to the local filesystem. The headers, if
+</a><a>  // provided, is used to make a request to the URL rather than using cache.
+</a><a>  // Format of |headers| is a new line separated list of key value pairs:
+</a><a>  // "<key1>: <value1>\r\n<key2>: <value2>".
+</a><a>  virtual void SaveFrameWithHeaders(const GURL& url,
+</a><a>                                    const Referrer& referrer,
+</a><a>                                    const std::string& headers) = 0;
+</a><a>
+</a><a>  // Generate an MHTML representation of the current page in the given file.
+</a><a>  // If |use_binary_encoding| is specified, a Content-Transfer-Encoding value of
+</a><a>  // 'binary' will be used, instead of a combination of 'quoted-printable' and
+</a><a>  // 'base64'.  Binary encoding is known to have interoperability issues and is
+</a><a>  // not the recommended encoding for shareable content.
+</a><a>  virtual void GenerateMHTML(
+</a><a>      const MHTMLGenerationParams& params,
+</a><a>      const base::Callback<void(int64_t /* size of the file */)>& callback) = 0;
+</a><a>
+</a><a>  // Returns the contents MIME type after a navigation.
+</a><a>  virtual const std::string& GetContentsMimeType() const = 0;
+</a><a>
+</a><a>  // Returns true if this WebContents will notify about disconnection.
+</a><a>  virtual bool WillNotifyDisconnection() const = 0;
+</a><a>
+</a><a>  // Returns the settings which get passed to the renderer.
+</a><a>  virtual content::RendererPreferences* GetMutableRendererPrefs() = 0;
+</a><a>
+</a><a>  // Tells the tab to close now. The tab will take care not to close until it's
+</a><a>  // out of nested run loops.
+</a><a>  virtual void Close() = 0;
+</a><a>
+</a><a>  // A render view-originated drag has ended. Informs the render view host and
+</a><a>  // WebContentsDelegate.
+</a><a>  virtual void SystemDragEnded(RenderWidgetHost* source_rwh) = 0;
+</a><a>
+</a><a>  // Notification the user has made a gesture while focus was on the
+</a><a>  // page. This is used to avoid uninitiated user downloads (aka carpet
+</a><a>  // bombing), see DownloadRequestLimiter for details.
+</a><a>  virtual void UserGestureDone() = 0;
+</a><a>
+</a><a>  // Indicates if this tab was explicitly closed by the user (control-w, close
+</a><a>  // tab menu item...). This is false for actions that indirectly close the tab,
+</a><a>  // such as closing the window.  The setter is maintained by TabStripModel, and
+</a><a>  // the getter only useful from within TAB_CLOSED notification
+</a><a>  virtual void SetClosedByUserGesture(bool value) = 0;
+</a><a>  virtual bool GetClosedByUserGesture() const = 0;
+</a><a>
+</a><a>  // Gets the minimum/maximum zoom percent.
+</a><a>  virtual int GetMinimumZoomPercent() const = 0;
+</a><a>  virtual int GetMaximumZoomPercent() const = 0;
+</a><a>
+</a><a>  // Set the renderer's page scale to the given factor.
+</a><a>  virtual void SetPageScale(float page_scale_factor) = 0;
+</a><a>
+</a><a>  // Gets the preferred size of the contents.
+</a><a>  virtual gfx::Size GetPreferredSize() const = 0;
+</a><a>
+</a><a>  // Called when the response to a pending mouse lock request has arrived.
+</a><a>  // Returns true if |allowed| is true and the mouse has been successfully
+</a><a>  // locked.
+</a><a>  virtual bool GotResponseToLockMouseRequest(bool allowed) = 0;
+</a><a>
+</a><a>  // Called when the user has selected a color in the color chooser.
+</a><a>  virtual void DidChooseColorInColorChooser(SkColor color) = 0;
+</a><a>
+</a><a>  // Called when the color chooser has ended.
+</a><a>  virtual void DidEndColorChooser() = 0;
+</a><a>
+</a><a>  // Returns true if the location bar should be focused by default rather than
+</a><a>  // the page contents. The view calls this function when the tab is focused
+</a><a>  // to see what it should do.
+</a><a>  virtual bool FocusLocationBarByDefault() = 0;
+</a><a>
+</a><a>  // Does this have an opener (corresponding to window.opener in JavaScript)
+</a><a>  // associated with it?
+</a><a>  virtual bool HasOpener() const = 0;
+</a><a>
+</a><a>  // Returns the opener if HasOpener() is true, or nullptr otherwise.
+</a><a>  virtual RenderFrameHost* GetOpener() const = 0;
+</a><a>
+</a><a>  // Returns true if this WebContents was opened by another WebContents, even
+</a><a>  // if the opener was suppressed. In contrast to HasOpener/GetOpener, the
+</a><a>  // original opener doesn't reflect window.opener which can be suppressed or
+</a><a>  // updated. This traces all the way back, so if the original owner was closed,
+</a><a>  // but _it_ had an original owner, this will return the original owner's
+</a><a>  // original owner, etc.
+</a><a>  virtual bool HasOriginalOpener() const = 0;
+</a><a>
+</a><a>  // Returns the original opener if HasOriginalOpener() is true, or nullptr
+</a><a>  // otherwise.
+</a><a>  virtual RenderFrameHost* GetOriginalOpener() const = 0;
+</a><a>
+</a><a>  // Returns the WakeLockContext accociated with this WebContents.
+</a><a>  virtual device::mojom::WakeLockContext* GetWakeLockContext() = 0;
+</a><a>
+</a><a>  typedef base::Callback<void(
+</a><a>      int, /* id */
+</a><a>      int, /* HTTP status code */
+</a><a>      const GURL&, /* image_url */
+</a><a>      const std::vector<SkBitmap>&, /* bitmaps */
+</a><a>      /* The sizes in pixel of the bitmaps before they were resized due to the
+</a><a>         max bitmap size passed to DownloadImage(). Each entry in the bitmaps
+</a><a>         vector corresponds to an entry in the sizes vector. If a bitmap was
+</a><a>         resized, there should be a single returned bitmap. */
+</a><a>      const std::vector<gfx::Size>&)>
+</a><a>          ImageDownloadCallback;
+</a><a>
+</a><a>  // Sends a request to download the given image |url| and returns the unique
+</a><a>  // id of the download request. When the download is finished, |callback| will
+</a><a>  // be called with the bitmaps received from the renderer.
+</a><a>  // If |is_favicon| is true, the cookies are not sent and not accepted during
+</a><a>  // download.
+</a><a>  // Bitmaps with pixel sizes larger than |max_bitmap_size| are filtered out
+</a><a>  // from the bitmap results. If there are no bitmap results <=
+</a><a>  // |max_bitmap_size|, the smallest bitmap is resized to |max_bitmap_size| and
+</a><a>  // is the only result. A |max_bitmap_size| of 0 means unlimited.
+</a><a>  // If |bypass_cache| is true, |url| is requested from the server even if it
+</a><a>  // is present in the browser cache.
+</a><a>  virtual int DownloadImage(const GURL& url,
+</a><a>                            bool is_favicon,
+</a><a>                            uint32_t max_bitmap_size,
+</a><a>                            bool bypass_cache,
+</a><a>                            const ImageDownloadCallback& callback) = 0;
+</a><a>
+</a><a>  // Returns true if the WebContents is responsible for displaying a subframe
+</a><a>  // in a different process from its parent page.
+</a><a>  // TODO(lazyboy): https://crbug.com/542893: this doesn't really belong here.
+</a><a>  // With site isolation, this should be removed since we can then embed iframes
+</a><a>  // in different processes.
+</a><a>  virtual bool IsSubframe() const = 0;
+</a><a>
+</a><a>  // Finds text on a page. |search_text| should not be empty.
+</a><a>  virtual void Find(int request_id,
+</a><a>                    const base::string16& search_text,
+</a><a>                    const blink::WebFindOptions& options) = 0;
+</a><a>
+</a><a>  // Notifies the renderer that the user has closed the FindInPage window
+</a><a>  // (and what action to take regarding the selection).
+</a><a>  virtual void StopFinding(StopFindAction action) = 0;
+</a><a>
+</a><a>  // Returns true if audio has recently been audible from the WebContents.
+</a><a>  virtual bool WasRecentlyAudible() = 0;
+</a><a>
+</a><a>  // Returns true if audio has been audible from the WebContents since the last
+</a><a>  // navigation.
+</a><a>  virtual bool WasEverAudible() = 0;
+</a><a>
+</a><a>  // The callback invoked when the renderer responds to a request for the main
+</a><a>  // frame document's manifest. The url will be empty if the document specifies
+</a><a>  // no manifest, and the manifest will be empty if any other failures occurred.
+</a><a>  typedef base::Callback<void(const GURL&, const Manifest&)>
+</a><a>      GetManifestCallback;
+</a><a>
+</a><a>  // Requests the manifest URL and the Manifest of the main frame's document.
+</a><a>  virtual void GetManifest(const GetManifestCallback& callback) = 0;
+</a><a>
+</a><a>  // Returns whether the renderer is in fullscreen mode.
+</a><a>  virtual bool IsFullscreenForCurrentTab() const = 0;
+</a><a>
+</a><a>  // Requests the renderer to exit fullscreen.
+</a><a>  // |will_cause_resize| indicates whether the fullscreen change causes a
+</a><a>  // view resize. e.g. This will be false when going from tab fullscreen to
+</a><a>  // browser fullscreen.
+</a><a>  virtual void ExitFullscreen(bool will_cause_resize) = 0;
+</a><a>
+</a><a>  // Unblocks requests from renderer for a newly created window. This is
+</a><a>  // used in showCreatedWindow() or sometimes later in cases where
+</a><a>  // delegate->ShouldResumeRequestsForCreatedWindow() indicated the requests
+</a><a>  // should not yet be resumed. Then the client is responsible for calling this
+</a><a>  // as soon as they are ready.
+</a><a>  virtual void ResumeLoadingCreatedWebContents() = 0;
+</a><a>
+</a><a>  // Sets whether the WebContents is for overlaying content on a page.
+</a><a>  virtual void SetIsOverlayContent(bool is_overlay_content) = 0;
+</a><a>
+</a><a>  virtual int GetCurrentlyPlayingVideoCount() = 0;
+</a><a>
+</a><a>  // Returns a map containing the sizes of all currently playing videos.
+</a><a>  using VideoSizeMap =
+</a><a>      base::flat_map<WebContentsObserver::MediaPlayerId, gfx::Size>;
+</a><a>  virtual base::Optional<gfx::Size> GetFullscreenVideoSize() = 0;
+</a><a>  virtual bool IsFullscreen() = 0;
+</a><a>
+</a><a>  // Tells the renderer to clear the focused element (if any).
+</a><a>  virtual void ClearFocusedElement() = 0;
+</a><a>
+</a><a>  // Returns true if the current focused element is editable.
+</a><a>  virtual bool IsFocusedElementEditable() = 0;
+</a><a>
+</a><a>  // Returns true if a context menu is showing on the page.
+</a><a>  virtual bool IsShowingContextMenu() const = 0;
+</a><a>
+</a><a>  // Tells the WebContents whether the context menu is showing.
+</a><a>  virtual void SetShowingContextMenu(bool showing) = 0;
+</a><a>
+</a><a>#if defined(OS_ANDROID)
+</a><a>  CONTENT_EXPORT static WebContents* FromJavaWebContents(
+</a><a>      const base::android::JavaRef<jobject>& jweb_contents_android);
+</a><a>  virtual base::android::ScopedJavaLocalRef<jobject> GetJavaWebContents() = 0;
+</a><a>
+</a><a>  // Selects and zooms to the find result nearest to the point (x,y) defined in
+</a><a>  // find-in-page coordinates.
+</a><a>  virtual void ActivateNearestFindResult(float x, float y) = 0;
+</a><a>
+</a><a>  // Requests the rects of the current find matches from the renderer
+</a><a>  // process. |current_version| is the version of find rects that the caller
+</a><a>  // already knows about. This version will be compared to the current find
+</a><a>  // rects version in the renderer process (which is updated whenever the rects
+</a><a>  // change), to see which new rect data will need to be sent back.
+</a><a>  //
+</a><a>  // TODO(paulmeyer): This process will change slightly once multi-process
+</a><a>  // find-in-page is implemented. This comment should be updated at that time.
+</a><a>  virtual void RequestFindMatchRects(int current_version) = 0;
+</a><a>
+</a><a>  // Returns an InterfaceProvider for Java-implemented interfaces that are
+</a><a>  // scoped to this WebContents. This provides access to interfaces implemented
+</a><a>  // in Java in the browser process to C++ code in the browser process.
+</a><a>  virtual service_manager::InterfaceProvider* GetJavaInterfaces() = 0;
+</a><a>#elif defined(OS_MACOSX)
+</a><a>  // Allowing other views disables optimizations which assume that only a single
+</a><a>  // WebContents is present.
+</a><a>  virtual void SetAllowOtherViews(bool allow) = 0;
+</a><a>
+</a><a>  // Returns true if other views are allowed, false otherwise.
+</a><a>  virtual bool GetAllowOtherViews() = 0;
+</a><a>
+</a><a>  // Returns true if the WebContents has completed its first meaningful paint.
+</a><a>  virtual bool CompletedFirstVisuallyNonEmptyPaint() const = 0;
+</a><a>#endif  // OS_ANDROID
+</a><a>
+</a><a> private:
+</a><a>  // This interface should only be implemented inside content.
+</a><a>  friend class WebContentsImpl;
+</a><a>  WebContents() {}
+</a><a>};
+</a><a>
+</a><a>}  // namespace content
+</a><a>
+</a><a>#endif  // CONTENT_PUBLIC_BROWSER_WEB_CONTENTS_H_</a>
+
+</body>
